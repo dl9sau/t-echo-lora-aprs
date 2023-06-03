@@ -70,4 +70,15 @@ float direction_angle(float lat1, float lon1, float lat2, float lon2);
  */
 void format_float(char *s, size_t s_len, float f, uint8_t decimals);
 
+
+/**@brief Format the given floating point position to nautical notation
+ *
+ * @param[out] s         Pointer to the output buffer.
+ * @param[in]  s_len     Length of the output buffer.
+ * @param[in]  f         The degrees. Value is positive for north and east.
+ * @param[in]  decimals  The number of digits right of the decimal point.
+ * @param[in]  is_latitude Position is latitude (1) or longitude (0)
+ */
+void format_position_nautical(char *s, size_t s_len, float f, uint8_t decimals, int is_latitude);
+
 #endif // UTILS_H

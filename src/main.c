@@ -162,7 +162,8 @@ nmea_data_t m_nmea_data;
 bool m_nmea_has_position = false;
 
 #define DISP_CYCLE_FIRST   DISP_STATE_GPS
-#define DISP_CYCLE_LAST    DISP_STATE_CLOCK_BME280
+//#define DISP_CYCLE_LAST    DISP_STATE_CLOCK_BME280
+#define DISP_CYCLE_LAST    DISP_STATE_NAVIGATION
 
 display_state_t m_display_state = DISP_STATE_STARTUP;
 display_state_t m_prev_display_state = DISP_CYCLE_FIRST;
@@ -174,7 +175,8 @@ uint64_t m_last_undecodable_timestamp;
 bool m_lora_rx_busy = false;
 bool m_lora_tx_busy = false;
 
-bool m_lora_rx_active = false;
+//bool m_lora_rx_active = false;
+bool m_lora_rx_active = true;
 bool m_tracker_active = false;
 bool m_gnss_keep_active = false;
 
@@ -766,7 +768,7 @@ static void cb_lora(lora_evt_t evt, const lora_evt_data_t *data)
 	aprs_frame_t decoded_frame;
 	aprs_rx_raw_data_t raw;
 
-	bool switch_to_rxd = (m_display_state != DISP_STATE_LORA_PACKET_DETAIL);
+	bool switch_to_rxd = (m_display_state != DISP_STATE_LORA_PACKET_DETAIL && m_display_state != DISP_STATE_NAVIGATION);
 
 	switch(evt)
 	{
@@ -793,7 +795,12 @@ static void cb_lora(lora_evt_t evt, const lora_evt_data_t *data)
 						m_display_rx_index);
 
 				if(switch_to_rxd) {
-					m_display_rx_index = idx;
+					// don't switch to rxd if we hear our own packet
+					if (strcmp(decoded_frame.source, aprs_get_source(NULL, -1))) {
+						m_display_rx_index = idx;
+					} else {
+						switch_to_rxd = false;
+					}
 				}
 			} else {
 				m_last_undecodable_data.rssi       = data->rx_packet_data.rssi;
@@ -919,7 +926,8 @@ static void cb_buttons(uint8_t btn_id, uint8_t evt)
 	// enable backlight on any button event
 	APP_ERROR_CHECK(app_timer_stop(m_backlight_timer));
 	led_on(LED_EPAPER_BACKLIGHT);
-	APP_ERROR_CHECK(app_timer_start(m_backlight_timer, APP_TIMER_TICKS(3000), NULL));
+	//APP_ERROR_CHECK(app_timer_start(m_backlight_timer, APP_TIMER_TICKS(3000), NULL));
+	APP_ERROR_CHECK(app_timer_start(m_backlight_timer, APP_TIMER_TICKS(10000), NULL));
 
 	// ensure the BME280 readout is up to date if the user is interacting with the device
 	readout_bme280_if_already_powered();
@@ -1454,7 +1462,8 @@ int main(void)
 	aprs_set_dest(APRS_DESTINATION);
 
 	aprs_clear_path();
-	aprs_add_path("WIDE1-1");
+	//aprs_add_path("WIDE1-1");
+	aprs_add_path("1");
 
 	m_display_state = DISP_STATE_STARTUP;
 	redraw_display(true);

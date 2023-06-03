@@ -35,6 +35,24 @@
 #define APRS_MAX_INFO_LEN (APRS_MAX_FRAME_LEN - (1+7+7+8*7+1+1+2+1))
 #define APRS_MAX_COMMENT_LEN 32
 
+#define PACKET_TYPE_POSITION 0
+#define PACKET_TYPE_WX 1
+
+#define HEADING_CHECK_MIN_SPEED   1.0f // m/s
+#define MAX_HEADING_DELTA_DEG    30.0f
+
+//#define MIN_TX_INTERVAL_MS      15000
+#define MIN_TX_INTERVAL_MS      30000
+//#define MAX_TX_INTERVAL_MS     900000
+#define MAX_TX_INTERVAL_MS     1800000
+
+#define MAX_DISTANCE_M           2000
+
+#define WX_INTERVAL_MS         900000
+
+#define RATE_LIMIT_MESSAGE_TEXT	1
+
+
 typedef enum
 {
 	AI_X = 0,
@@ -92,7 +110,8 @@ typedef struct {
 	char symbol;
 } aprs_frame_t;
 
-#define APRS_RX_HISTORY_SIZE 3
+//#define APRS_RX_HISTORY_SIZE 3
+#define APRS_RX_HISTORY_SIZE 64
 
 typedef struct {
 	uint8_t      data[256];
@@ -119,7 +138,8 @@ void aprs_init(void);
 void aprs_set_dest(const char *dest);
 void aprs_get_dest(char *dest, size_t dest_len);
 void aprs_set_source(const char *call);
-void aprs_get_source(char *source, size_t source_len);
+//void aprs_get_source(char *source, size_t source_len);
+const char *aprs_get_source(char *source, size_t source_len);
 void aprs_clear_path();
 uint8_t aprs_add_path(const char *call);
 void aprs_update_pos_time(float lat, float lon, float alt_m, time_t t);
@@ -128,7 +148,7 @@ void aprs_set_icon(char table, char icon);
 void aprs_set_icon_default(aprs_icon_t icon);
 void aprs_set_comment(const char *comment);
 bool aprs_can_build_frame(void);
-size_t aprs_build_frame(uint8_t *frame, const aprs_args_t *args);
+size_t aprs_build_frame(uint8_t *frame, const aprs_args_t *args, uint8_t packet_type);
 
 uint32_t aprs_get_config_flags(void);
 void aprs_set_config_flags(uint32_t new_flags);

@@ -78,6 +78,88 @@ static int format_timedelta(char *buf, size_t buf_len, uint32_t timedelta)
 	}
 }
 
+
+int compute_maidenhead_grid_fields_squares_subsquares(char *locator, int locator_size, float deg, int pos_start) {
+  char *p = locator;
+  int div = 24;
+
+  if (locator_size < 4 || !(locator_size % 2) || pos_start > 2)
+    return -1;
+
+  p = p + pos_start;
+
+  *p = 'A' + (int ) deg / 10;
+  p = p+2;
+  *p = '0' + ((int ) deg % 10);
+  p = p+2;
+
+  deg = (deg - (int ) deg);
+
+  for (;;) {
+    deg = (deg - (int ) deg) *div;
+    *p = (div == 10 ? '0' : (p-locator < 6) ? 'A' : 'a') + (int ) deg;
+    div = (div == 10 ? 24 : 10);
+    p = p+2;
+    if (p-locator > locator_size-2) {
+      break;
+    }
+  }
+  *p = 0;
+
+  return 0;
+}
+
+char *compute_maidenhead_grid_locator(float lat, float lon, int ambiguity) {
+
+  static char locator[13]; // Room for JO62QN11aa22 + \0 == 13
+  double deg;
+
+  // Resolution 180/18./10/ 24*60 /10/24/10 * 1852 = 1.93m
+  deg = lat;
+  if (deg >= 0.0)
+    deg = 90.0 + deg + 0.0000001;
+  else
+    deg = 90.0 - deg;
+  if (deg > 179.99999) deg = 179.99999; else if (deg < 0.0) deg = 0.0;
+  if (compute_maidenhead_grid_fields_squares_subsquares(locator, sizeof(locator), deg, 1) < 0)
+    return "AA00";
+
+  // Resolution up to 180/2/18./10/ 24*60 /10/24/10 * 1852 = 3.85m; 1.93m at 60 deg N/S.
+  deg = lon;
+  if (deg >= 0.0)
+    deg = 180.0 + deg + 0.0000001;
+  else
+    deg = 180.0 - deg;
+  deg = deg / 2.0;
+  if (deg > 179.99999) deg = 179.99999; else if (deg < 0.0) deg = 0.0;
+  if (compute_maidenhead_grid_fields_squares_subsquares(locator, sizeof(locator), deg, 0) < 0)
+    return "AA00";
+
+  if (ambiguity >= 4)
+    locator[2] = 0; // JO -> 600' == 1111.2km in latitude
+  if (ambiguity == 3)
+    locator[4] = 0; // JO62 -> 60' == 111.12km in latitude
+  else if (ambiguity == 2)
+    locator[6] = 0; // JO62qn -> 2.5' == 4.63km in latitude
+  else if (ambiguity == 1)
+    locator[8] = 0; // JO62qn11 -> 0.25' -> 463m in latitude
+  else if (ambiguity == 0)
+    locator[10] = 0; // JO62qn11aa -> 0.0104166' -> 19.3m. At lat (and 60deg N/S) almost exactly the normal aprs resolution
+  else
+    locator[12] = 0; // JO62qn11aa22 -> 0.00104166' > 1.93m. High Precision achivable with DAO !W..! extension.
+  // JO62qn11aa22bb would not only hard readable. It would be a precision of 0.0000434' -> 8.034cm
+  return locator;
+}
+
+char *course_to_nno(float deg) {
+  static char *nno[] = { "N", "NNO", "NO", "ONO", \
+                         "O", "OSO", "SO", "SSO", \
+		         "S", "SSW", "SW", "WSW", \
+                         "W", "WNW", "NW", "NNW" };
+  return nno[((int ) ((deg + 11.25f) / 22.5f)) % 16];
+}
+
+
 /**@brief Redraw the e-Paper display.
  */
 void redraw_display(bool full_update)
@@ -338,6 +420,8 @@ void redraw_display(bool full_update)
 				epaper_fb_draw_string("Lora-APRS by DL5TKL", EPAPER_COLOR_BLACK);
 				epaper_fb_move_to(0, 190);
 				epaper_fb_draw_string(VERSION, EPAPER_COLOR_BLACK);
+				epaper_fb_move_to(0, line_height);
+				epaper_fb_draw_string("DL9SAU@darc.de D23", EPAPER_COLOR_BLACK);
 				break;
 
 			case DISP_STATE_PASSKEY:
@@ -388,7 +472,7 @@ void redraw_display(bool full_update)
 					epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
 
 					epaper_fb_move_to(150, yoffset);
-					snprintf(s, sizeof(s), "%d", (int)(m_nmea_data.altitude + 0.5f));
+					snprintf(s, sizeof(s), "%d m", (int)(m_nmea_data.altitude + 0.5f));
 					epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
 				} else {
 					epaper_fb_draw_string("No fix :-(", EPAPER_COLOR_BLACK);
@@ -460,22 +544,40 @@ void redraw_display(bool full_update)
 				uint8_t altitude_yoffset = yoffset;
 
 				if(m_nmea_data.pos_valid) {
-					format_float(tmp1, sizeof(tmp1), m_nmea_data.lat, 6);
-					snprintf(s, sizeof(s), "Lat: %s", tmp1);
-					epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+					static uint8_t position_maidenhead_toggle = 4;
+
+					if (((((position_maidenhead_toggle++) / 4)) % 4) > 0) {
+						//format_float(tmp1, sizeof(tmp1), m_nmea_data.lat, 6);
+						//snprintf(s, sizeof(s), "Lat: %s", tmp1);
+						format_position_nautical(tmp1, sizeof(tmp1), m_nmea_data.lat, 3, 1);
+						//snprintf(s, sizeof(s), "%s", tmp1);
+						//epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+						epaper_fb_move_to(EPAPER_WIDTH/2+5 - epaper_fb_calc_text_width(tmp1), yoffset);
+						epaper_fb_draw_string(tmp1, EPAPER_COLOR_BLACK);
+
+						yoffset += line_height;
+						epaper_fb_move_to(0, yoffset);
+
+						//format_float(tmp1, sizeof(tmp1), m_nmea_data.lon, 6);
+						//snprintf(s, sizeof(s), "Lon: %s", tmp1);
+						format_position_nautical(tmp1, sizeof(tmp1), m_nmea_data.lon, 3, 0);
+						//snprintf(s, sizeof(s), "%s", tmp1);
+						//epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+						epaper_fb_move_to(EPAPER_WIDTH/2+5 - epaper_fb_calc_text_width(tmp1), yoffset);
+						epaper_fb_draw_string(tmp1, EPAPER_COLOR_BLACK);
+					} else {
+						//snprintf(s, sizeof(s), "%s", compute_maidenhead_grid_locator(m_nmea_data.lat, m_nmea_data.lon, -3));
+						char *p = compute_maidenhead_grid_locator(m_nmea_data.lat, m_nmea_data.lon, -3);
+						epaper_fb_draw_string(p, EPAPER_COLOR_BLACK);
+						yoffset += line_height;
+					}
 
 					yoffset += line_height;
 					epaper_fb_move_to(0, yoffset);
 
-					format_float(tmp1, sizeof(tmp1), m_nmea_data.lon, 6);
-					snprintf(s, sizeof(s), "Lon: %s", tmp1);
-					epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
-
-					yoffset += line_height;
-					epaper_fb_move_to(0, yoffset);
-
-					format_float(tmp1, sizeof(tmp1), m_nmea_data.altitude, 1);
-					snprintf(s, sizeof(s), "Alt: %s m", tmp1);
+					//format_float(tmp1, sizeof(tmp1), m_nmea_data.altitude, 1);
+					//snprintf(s, sizeof(s), "Alt: %s m", tmp1);
+					snprintf(s, sizeof(s), "Alt: %dm", (int ) m_nmea_data.altitude);
 					epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
 
 					altitude_yoffset = yoffset;
@@ -483,23 +585,22 @@ void redraw_display(bool full_update)
 					epaper_fb_draw_string("No fix :-(", EPAPER_COLOR_BLACK);
 				}
 
-				yoffset += line_height * 5 / 4;
-				epaper_fb_move_to(0, yoffset);
-
-				snprintf(s, sizeof(s), "TX count: %lu", tracker_get_tx_counter());
-
-				epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
-
-				yoffset += line_height * 5 / 4;
-				epaper_fb_move_to(0, yoffset);
+				yoffset += line_height;
 
 				if(m_nmea_data.speed_heading_valid) {
 					float speed_kmph = m_nmea_data.speed * 3.6f;
 
+					//format_float(tmp1, sizeof(tmp1), speed_kmph, 1);
+					//snprintf(s, sizeof(s), "%s km/h", tmp1);
+
+                                        //snprintf(s, sizeof(s), "CSE: %-3s %03d", course_to_nno(m_nmea_data.heading), (int ) m_nmea_data.heading);
+                                        snprintf(s, sizeof(s), "%-3s%03d", course_to_nno(m_nmea_data.heading), (int ) m_nmea_data.heading);
+					epaper_fb_move_to(EPAPER_WIDTH - epaper_fb_calc_text_width(s), altitude_yoffset);
+					epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+
 					format_float(tmp1, sizeof(tmp1), speed_kmph, 1);
 					snprintf(s, sizeof(s), "%s km/h", tmp1);
-
-					epaper_fb_move_to(EPAPER_WIDTH - epaper_fb_calc_text_width(s), altitude_yoffset);
+					epaper_fb_move_to(EPAPER_WIDTH - epaper_fb_calc_text_width(s), altitude_yoffset + line_height);
 					epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
 
 					static const uint8_t r = 30;
@@ -521,15 +622,45 @@ void redraw_display(bool full_update)
 
 					epaper_fb_move_to(center_x - 5, center_y - r + line_height/3);
 					epaper_fb_draw_string("N", EPAPER_COLOR_BLACK);
+
+				        epaper_fb_move_to(0, yoffset);
+
 				} else {
+					epaper_fb_move_to(0, yoffset);
 					epaper_fb_draw_string("No speed / heading info.", EPAPER_COLOR_BLACK);
+					yoffset += line_height *2;
 				}
+
+				yoffset += line_height;
+				if(bme280_is_present()) {
+			                epaper_fb_move_to(0, yoffset);
+					if (m_nmea_data.pos_valid) {
+						format_float(tmp1, sizeof(tmp1), bme280_get_pressure() + m_nmea_data.altitude * 0.125f, 1);
+                                               	snprintf(s, sizeof(s), "P @0 m ASL: %s hPA", tmp1);
+					} else {
+						format_float(tmp1, sizeof(tmp1), bme280_get_pressure(), 1);
+                                               	snprintf(s, sizeof(s), "P @curr ALT: %s hPA", tmp1);
+					}
+			                epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+                                }
+
+				yoffset += line_height * 5 / 4;
+				epaper_fb_move_to(0, yoffset);
+
+				snprintf(s, sizeof(s), "TX count: %lu", tracker_get_tx_counter());
+
+				epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+
+			        yoffset += line_height;
+
+
 				break;
 
 			case DISP_STATE_LORA_RX_OVERVIEW:
 				yoffset -= line_height;
 
-				for(uint8_t i = 0; i < APRS_RX_HISTORY_SIZE+1; i++) {
+				//for(uint8_t i = 0; i < APRS_RX_HISTORY_SIZE+1; i++) {
+				for(uint8_t i = 0; i < (APRS_RX_HISTORY_SIZE > 3 ? 3 : APRS_RX_HISTORY_SIZE) +1; i++) {
 					yoffset += 2*line_height;
 
 					uint8_t fg_color, bg_color;
@@ -546,7 +677,8 @@ void redraw_display(bool full_update)
 
 #define HISTORY_TEXT_BASE_OFFSET 6
 
-					if(i < APRS_RX_HISTORY_SIZE) {
+					//if(i < APRS_RX_HISTORY_SIZE) {
+					if(i < (APRS_RX_HISTORY_SIZE > 3 ? 3 : APRS_RX_HISTORY_SIZE)) {
 						// decoded entries
 						const aprs_rx_history_entry_t *entry = &aprs_history->history[i];
 
@@ -557,12 +689,17 @@ void redraw_display(bool full_update)
 
 						// source call
 						epaper_fb_move_to(0, yoffset - line_height - HISTORY_TEXT_BASE_OFFSET);
-						epaper_fb_draw_string(entry->decoded.source, fg_color);
+						//epaper_fb_draw_string(entry->decoded.source, fg_color);
+                                                const char *p = entry->decoded.source;
+                                                if (!p || !*p) p = "nobody";
+						epaper_fb_draw_string(p, fg_color);
 
 						// time since reception
 						uint32_t timedelta = unix_now - entry->rx_timestamp;
 
-						format_timedelta(s, sizeof(s), timedelta);
+						//format_timedelta(s, sizeof(s), timedelta);
+					        strncpy(s, "t: ", sizeof(s));
+						format_timedelta(s+2, sizeof(s)-2, (entry->rx_timestamp ? timedelta : 0));
 
 						epaper_fb_move_to(0, yoffset - HISTORY_TEXT_BASE_OFFSET);
 						epaper_fb_draw_string(s, fg_color);
@@ -578,7 +715,7 @@ void redraw_display(bool full_update)
 									entry->decoded.lat, entry->decoded.lon);
 
 							if(distance < 1000.0f) {
-								snprintf(s, sizeof(s), "%dm", (int)(distance + 0.5f));
+								snprintf(s, sizeof(s), "d: %dm", (int)(distance + 0.5f));
 							} else {
 								format_float(s, sizeof(s), distance * 1e-3f, 1);
 								strcat(s, "km");
@@ -670,28 +807,66 @@ void redraw_display(bool full_update)
 			case DISP_STATE_LORA_PACKET_DETAIL:
 				if(m_display_rx_index < APRS_RX_HISTORY_SIZE) {
 					const aprs_rx_history_entry_t *entry = &aprs_history->history[m_display_rx_index];
+					static uint8_t position_maidenhead_toggle = 4;
 
-					epaper_fb_draw_string(entry->decoded.source, EPAPER_COLOR_BLACK);
+					// time since reception
+					uint32_t timedelta = unix_now - entry->rx_timestamp;
+                                        const char *p = entry->decoded.source;
 
-					yoffset += line_height;
-					epaper_fb_move_to(0, yoffset);
+					//epaper_fb_draw_string(entry->decoded.source, EPAPER_COLOR_BLACK);
+					format_timedelta(tmp1, sizeof(tmp1), entry->rx_timestamp ? timedelta : 0);
+                                        if (!p || !*p) p = "nobody";
+                                        snprintf(s, sizeof(s), "%u:%s %s", m_display_rx_index+1, tmp1, p);
 
-					format_float(tmp1, sizeof(tmp1), entry->decoded.lat, 6);
-					snprintf(s, sizeof(s), "Lat: %s", tmp1);
 					epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
 
 					yoffset += line_height;
 					epaper_fb_move_to(0, yoffset);
 
-					format_float(tmp1, sizeof(tmp1), entry->decoded.lon, 6);
-					snprintf(s, sizeof(s), "Lon: %s", tmp1);
-					epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+					if (((((position_maidenhead_toggle++) / 4)) % 4) > 0) {
+						//format_float(tmp1, sizeof(tmp1), entry->decoded.lat, 6);
+						//snprintf(s, sizeof(s), "Lat: %s", tmp1);
+						format_position_nautical(tmp1, sizeof(tmp1), entry->decoded.lat, 3, 1);
+						//snprintf(s, sizeof(s), "%s", tmp1);
+						//epaper_fb_move_to(EPAPER_WIDTH/2+5 - epaper_fb_calc_text_width(s), yoffset);
+						//epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+						epaper_fb_move_to(EPAPER_WIDTH/2+5 - epaper_fb_calc_text_width(tmp1), yoffset);
+						epaper_fb_draw_string(tmp1, EPAPER_COLOR_BLACK);
+
+						yoffset += line_height;
+						epaper_fb_move_to(0, yoffset);
+
+						//format_float(tmp1, sizeof(tmp1), entry->decoded.lon, 6);
+						format_position_nautical(tmp1, sizeof(tmp1), entry->decoded.lon, 3, 0);
+						//snprintf(s, sizeof(s), "Lon: %s", tmp1);
+						//snprintf(s, sizeof(s), "%s", tmp1);
+						//epaper_fb_move_to(EPAPER_WIDTH/2+5 - epaper_fb_calc_text_width(s), yoffset);
+						//snprintf(s, sizeof(s), "%s", tmp1);
+						epaper_fb_move_to(EPAPER_WIDTH/2+5 - epaper_fb_calc_text_width(tmp1), yoffset);
+						epaper_fb_draw_string(tmp1, EPAPER_COLOR_BLACK);
+					} else {
+						epaper_fb_draw_string("he:  ", EPAPER_COLOR_BLACK);
+						//snprintf(s, sizeof(s), "%s", compute_maidenhead_grid_locator(entry->decoded.lat, entry->decoded.lon, 1));
+						//epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+						char *p = compute_maidenhead_grid_locator(entry->decoded.lat, entry->decoded.lon, 1);
+						epaper_fb_draw_string(p, EPAPER_COLOR_BLACK);
+
+						yoffset += line_height;
+						epaper_fb_move_to(0, yoffset);
+
+						epaper_fb_draw_string("me: ", EPAPER_COLOR_BLACK);
+						//snprintf(s, sizeof(s), "%s", compute_maidenhead_grid_locator(m_nmea_data.lat, m_nmea_data.lon, 1));
+						//epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+						p = compute_maidenhead_grid_locator(m_nmea_data.lat, m_nmea_data.lon, 1);
+						epaper_fb_draw_string(p, EPAPER_COLOR_BLACK);
+					}
 
 					yoffset += line_height;
 					epaper_fb_move_to(0, yoffset);
 
-					format_float(tmp1, sizeof(tmp1), entry->decoded.alt, 1);
-					snprintf(s, sizeof(s), "Alt: %s m", tmp1);
+					//format_float(tmp1, sizeof(tmp1), entry->decoded.alt, 1);
+					//snprintf(s, sizeof(s), "Alt: %s m", tmp1);
+					snprintf(s, sizeof(s), "Alt: %dm", (int ) entry->decoded.alt);
 					epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
 
 					uint8_t altitude_yoffset = yoffset; // store it for later use
@@ -708,7 +883,7 @@ void redraw_display(bool full_update)
 
 					yoffset = epaper_fb_get_cursor_pos_y();
 
-					if(m_nmea_has_position) {
+					if(m_nmea_has_position && entry->decoded.source[0]) {
 						float distance = great_circle_distance_m(
 								m_nmea_data.lat, m_nmea_data.lon,
 								entry->decoded.lat, entry->decoded.lon);
@@ -717,8 +892,22 @@ void redraw_display(bool full_update)
 								m_nmea_data.lat, m_nmea_data.lon,
 								entry->decoded.lat, entry->decoded.lon);
 
-						format_float(tmp1, sizeof(tmp1), distance / 1000.0f, 3);
-						snprintf(s, sizeof(s), "%s km", tmp1);
+						//format_float(tmp1, sizeof(tmp1), distance / 1000.0f, 3);
+						//snprintf(s, sizeof(s), "%s km", tmp1);
+						if(distance < 1000.0f) {
+							snprintf(tmp1, sizeof(tmp1), "%dm", (int)(distance + 0.5f));
+						} else {
+							if (distance < 10000.0f) {
+								format_float(tmp1, sizeof(tmp1), distance * 1e-3f, 2);
+							//} else if (distance < 100000.0f) {
+								//format_float(tmp1, sizeof(tmp1), distance * 1e-3f, 1);
+							} else {
+								format_float(tmp1, sizeof(tmp1), distance * 1e-3f, 0);
+							}
+							strcat(tmp1, "km");
+                                                }
+						//snprintf(s, sizeof(s), "d: %s  DIR: %-3s %03d", course_to_nno(direction), tmp1, (int ) direction);
+						snprintf(s, sizeof(s), "d:%s %-3s%03d", tmp1, course_to_nno(direction), (int ) direction);
 
 						uint8_t text_width = epaper_fb_calc_text_width(s);
 
@@ -815,13 +1004,23 @@ void redraw_display(bool full_update)
 						yoffset = EPAPER_HEIGHT / 2;
 					}
 
-					snprintf(s, sizeof(s), "%02d:%02d", utc.tm_hour, utc.tm_min);
+					*s = 0;
+                                        if (utc.tm_year == 70) {
+                                          strncpy(s, "Uptime ", sizeof(s));
+                                        }
+					//snprintf(s, sizeof(s), "%02d:%02d", utc.tm_hour, utc.tm_min);
+					snprintf(s+strlen(s), sizeof(s)-strlen(s), "%02d:%02d", utc.tm_hour, utc.tm_min);
 					uint8_t textwidth = epaper_fb_calc_text_width(s);
 
 					epaper_fb_move_to(EPAPER_WIDTH/2 - textwidth/2, yoffset);
 					epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
 
-					snprintf(s, sizeof(s), "%04d-%02d-%02d", utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday);
+                                        if (utc.tm_year != 70) {
+					  snprintf(s, sizeof(s), "%04d-%02d-%02d", utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday);
+                                        } else {
+					  //strncpy(s, "____-__-__", sizeof(s));
+					  *s = 0;
+                                        }
 					textwidth = epaper_fb_calc_text_width(s);
 
 					yoffset += line_height;
@@ -840,8 +1039,10 @@ void redraw_display(bool full_update)
 						epaper_fb_move_to(0, yoffset);
 						epaper_fb_draw_string("Temperature:", EPAPER_COLOR_BLACK);
 
-						format_float(tmp1, sizeof(tmp1), bme280_get_temperature(), 2);
-						snprintf(s, sizeof(s), "%s C", tmp1);
+						//format_float(tmp1, sizeof(tmp1), bme280_get_temperature(), 2);
+						format_float(tmp1, sizeof(tmp1), bme280_get_temperature(), 1);
+						//snprintf(s, sizeof(s), "%s C", tmp1);
+						snprintf(s, sizeof(s), "%s C    ", tmp1);
 
 						epaper_fb_move_to(EPAPER_WIDTH - epaper_fb_calc_text_width(s), yoffset);
 						epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
@@ -851,8 +1052,10 @@ void redraw_display(bool full_update)
 						epaper_fb_move_to(0, yoffset);
 						epaper_fb_draw_string("Humidity:", EPAPER_COLOR_BLACK);
 
-						format_float(tmp1, sizeof(tmp1), bme280_get_humidity(), 2);
-						snprintf(s, sizeof(s), "%s %%", tmp1);
+						//format_float(tmp1, sizeof(tmp1), bme280_get_humidity(), 2);
+						format_float(tmp1, sizeof(tmp1), bme280_get_humidity(), 1);
+						//snprintf(s, sizeof(s), "%s %%", tmp1);
+						snprintf(s, sizeof(s), "%s %%    ", tmp1);
 
 						epaper_fb_move_to(EPAPER_WIDTH - epaper_fb_calc_text_width(s), yoffset);
 						epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
@@ -860,19 +1063,148 @@ void redraw_display(bool full_update)
 						yoffset += line_height;
 
 						epaper_fb_move_to(0, yoffset);
-						epaper_fb_draw_string("Pressure:", EPAPER_COLOR_BLACK);
+						//epaper_fb_draw_string("Pressure:", EPAPER_COLOR_BLACK);
+						epaper_fb_draw_string("P @curr ALT:", EPAPER_COLOR_BLACK);
 
-						format_float(tmp1, sizeof(tmp1), bme280_get_pressure(), 2);
+						//format_float(tmp1, sizeof(tmp1), bme280_get_pressure(), 2);
+						format_float(tmp1, sizeof(tmp1), bme280_get_pressure(), 1);
 						snprintf(s, sizeof(s), "%s hPa", tmp1);
 
 						epaper_fb_move_to(EPAPER_WIDTH - epaper_fb_calc_text_width(s), yoffset);
 						epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
 
 						yoffset += line_height;
+
+						epaper_fb_move_to(0, yoffset);
+                                                if(m_nmea_data.pos_valid) {
+						  epaper_fb_draw_string("P @ 0 m ASL:", EPAPER_COLOR_BLACK);
+						  format_float(tmp1, sizeof(tmp1), bme280_get_pressure() + m_nmea_data.altitude * 0.125f, 1);
+						  snprintf(s, sizeof(s), "%s hPa", tmp1);
+                                                } else {
+                                                  *s = 0;
+                                                }
+
+						epaper_fb_move_to(EPAPER_WIDTH - epaper_fb_calc_text_width(s), yoffset);
+						epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+
+						yoffset += line_height;
+
+						// TODO: Taupunkt. spread: temp - tp. Wolkenuntergrenze [m]: (spread * 125)
+						//https://www.mikrocontroller.net/topic/306226
+						//https://stackoverflow.com/questions/42031354/how-to-format-a-complicated-formula-that-includes-exponents-in-java
+						float x = 1.0 - 0.01 * bme280_get_humidity();
+                                                float t = bme280_get_temperature();
+						// dew point depression
+						float spread = (14.55 + 0.114 * t) * x + pow(((2.5 + 0.007 *t) * x), 3) + (15.9 + 0.117 * t) * pow(x, 14);
+						format_float(tmp1, sizeof(tmp1), spread, 1);
+						format_float(tmp2, sizeof(tmp2), t-spread, 1);
+                                                snprintf(s, sizeof(s), "t-tp%s=s%s c:%dm", tmp2, tmp1, (int ) (spread*125));
+						epaper_fb_move_to(0, yoffset);
+						epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+
+						yoffset += line_height;
 					}
+
 				}
 				break;
 
+ 			case DISP_STATE_NAVIGATION:
+				epaper_fb_move_to(0, yoffset);
+                                //aprs_get_source(tmp1, sizeof(tmp1));
+				//epaper_fb_draw_string(tmp1, EPAPER_COLOR_BLACK);
+				epaper_fb_draw_string(aprs_get_source(NULL, 0), EPAPER_COLOR_BLACK);
+
+				if(bme280_is_present()) {
+						yoffset = 3 * line_height;
+						epaper_fb_move_to(0, yoffset);
+
+						format_float(tmp1, sizeof(tmp1), bme280_get_temperature(), 1);
+						snprintf(s, sizeof(s), "T: %s C", tmp1);
+						epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+
+						yoffset += line_height;
+						epaper_fb_move_to(0, yoffset);
+
+						format_float(tmp1, sizeof(tmp1), bme280_get_humidity(), 1);
+						snprintf(s, sizeof(s), "H: %s %%", tmp1);
+						epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+
+						yoffset += line_height;
+						epaper_fb_move_to(0, yoffset);
+
+						if(m_nmea_data.pos_valid) {
+							snprintf(s, sizeof(s), "A: %d m", (int ) m_nmea_data.altitude);
+							epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+						}
+
+						yoffset += line_height *2; // skip one line for speed
+						epaper_fb_move_to(0, yoffset);
+						format_float(tmp1, sizeof(tmp1), bme280_get_pressure(), 1);
+						snprintf(s, sizeof(s), "%s hPa", tmp1);
+						epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+				}
+
+				yoffset = 8 * line_height;
+				epaper_fb_move_to(0, yoffset);
+
+				// Bottom line
+				if(m_nmea_data.pos_valid) {
+					format_position_nautical(tmp1, sizeof(tmp1), m_nmea_data.lat, 3, 1);
+					format_position_nautical(tmp2, sizeof(tmp2), m_nmea_data.lon, 3, 0);
+					snprintf(s, sizeof(s), "%s %s", tmp1, tmp2);
+					epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+
+				} else {
+					epaper_fb_draw_string("No fix :-(", EPAPER_COLOR_BLACK);
+				}
+
+				yoffset = 6 * line_height;
+				epaper_fb_move_to(0, yoffset);
+
+				if(m_nmea_data.speed_heading_valid) {
+					float speed_kmph = m_nmea_data.speed * 3.6f;
+
+					//format_float(tmp1, sizeof(tmp1), speed_kmph, 1);
+					//snprintf(s, sizeof(s), "%s km/h", tmp1);
+					format_float(tmp2, sizeof(tmp2), speed_kmph/1.852f, 1);
+					snprintf(s, sizeof(s), "%s kt", tmp2);
+					//format_float(tmp2, sizeof(tmp2), speed_kmph/1.852f, 1);
+					//snprintf(s, sizeof(s), "%s km/h  %s kt", tmp1, tmp2);
+					epaper_fb_move_to(EPAPER_WIDTH/3 +1 - epaper_fb_calc_text_width(s), yoffset);
+					epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+
+					static const uint8_t r = 60;
+					uint8_t center_x = EPAPER_WIDTH - r - 5;
+					uint8_t center_y = line_height*2 + r - 5;
+
+					epaper_fb_move_to(center_x, center_y);
+					epaper_fb_circle(r, EPAPER_COLOR_BLACK);
+					epaper_fb_circle(2, EPAPER_COLOR_BLACK);
+
+					uint8_t arrow_start_x = center_x;
+					uint8_t arrow_start_y = center_y;
+
+					uint8_t arrow_end_x = center_x + r * sinf(m_nmea_data.heading * (3.14f / 180.0f));
+					uint8_t arrow_end_y = center_y - r * cosf(m_nmea_data.heading * (3.14f / 180.0f));
+
+					epaper_fb_move_to(arrow_start_x, arrow_start_y);
+					epaper_fb_line_to(arrow_end_x, arrow_end_y, EPAPER_COLOR_BLACK);
+
+					epaper_fb_move_to(center_x - 5, center_y - r + line_height/3);
+					epaper_fb_draw_string("N", EPAPER_COLOR_BLACK);
+
+                                        snprintf(s, sizeof(s), "%-3s %03d", course_to_nno(m_nmea_data.heading), (int ) m_nmea_data.heading);
+					epaper_fb_move_to(center_x - 5+3 - epaper_fb_calc_text_width(s)/2, yoffset);
+					epaper_fb_draw_string(s, EPAPER_COLOR_BLACK);
+
+
+				} else {
+					epaper_fb_draw_string("No speed / heading info.", EPAPER_COLOR_BLACK);
+				}
+
+				break;
+
+			
 			case DISP_STATE_END:
 				// this state should never be reached.
 				epaper_fb_draw_string("BUG! Please report!", EPAPER_COLOR_BLACK);
@@ -882,5 +1214,3 @@ void redraw_display(bool full_update)
 
 	epaper_update(full_update);
 }
-
-

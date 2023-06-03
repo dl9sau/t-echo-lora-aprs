@@ -84,6 +84,13 @@ void format_float(char *s, size_t s_len, float f, uint8_t decimals)
 
 	int32_t factor = 1;
 
+	// mitigate rounding errors
+        if (f >= 0.0f) {
+        	f =  f + (5.0f/ pow(10, decimals +1));
+	} else {
+        	f =  f - (5.0f/ pow(10, decimals +1));
+	}
+
 	for(uint8_t i = 0; i < decimals; i++) {
 		factor *= 10;
 	}
@@ -94,4 +101,44 @@ void format_float(char *s, size_t s_len, float f, uint8_t decimals)
 	         (f < 0 && f > -1.0) ? "-" : "",
 	         (int32_t)f,
 	         (int32_t)(((f > 0) ? (f - (int32_t)f) : ((int32_t)f - f)) * factor));
+}
+
+
+void format_position_nautical(char *s, size_t s_len, float f, uint8_t decimals, int is_latitude)
+{
+	char fmt[32];
+        int i_deg;
+        char c_nswe = is_latitude ? 'N' : 'E';
+
+        if (f < 0) {
+          f *= -1;
+          c_nswe = is_latitude ? 'S' : 'W';
+        }
+        i_deg = (int ) f;
+        f = (f - i_deg) * 60.0; // f is now minutes.decimals
+
+	// mitigate rounding errors
+        f = f + (5.0f/ pow(10, decimals +1));
+
+	if (f >= 60.0f) {
+        	f = 60 - (1.0/ pow(10, decimals));
+	}
+
+	int32_t factor = 1;
+
+	for(uint8_t i = 0; i < decimals; i++) {
+		factor *= 10;
+	}
+
+	snprintf(fmt, sizeof(fmt), "%%0%dd-%%0%dd,%%0%dd%%c", (is_latitude ? 2 : 3), 2, decimals);
+
+	snprintf(s, s_len, fmt,
+                 i_deg,
+	         (int32_t)f,
+	         (int32_t)((f - (int32_t)f) * factor),
+	         c_nswe);
+
+        // something buged here. We get 5 decimals.
+        //s[is_latitude ? 9 : 10] = c_nswe;
+        //s[is_latitude ? 10 : 11] = 0;
 }

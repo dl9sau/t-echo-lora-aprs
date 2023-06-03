@@ -33,6 +33,14 @@
 #include <math.h>
 
 #include "aprs.h"
+#include "time_base.h"
+#include "wall_clock.h"
+
+#ifdef RATE_LIMIT_MESSAGE_TEXT
+bool rate_limit_message_text = RATE_LIMIT_MESSAGE_TEXT ? true : false;
+#else
+bool rate_limit_message_text = false;
+#endif
 
 const char m_icon_map[APRS_NUM_ICONS] = {
 	'.', // AI_X
@@ -106,7 +114,8 @@ static void append_address(uint8_t **frameptr, char *addr, uint8_t is_last)
 	}
 }
 
-static char* encode_position_readable(char *str, size_t max_len, char table, char symbol)
+//static char* encode_position_readable(char *str, size_t max_len, char table, char symbol)
+static char* encode_position_readable(char *str, size_t max_len, char table, char symbol, char *dao)
 {
 	float lat = m_lat;
 	float lon = m_lon;
@@ -117,7 +126,8 @@ static char* encode_position_readable(char *str, size_t max_len, char table, cha
 	int lat_min, lon_min;
 	int lat_min_fract, lon_min_fract;
 
-	char dao[6];
+	//char dao[6];
+        *dao = 0;
 
 	// convert sign -> north/south, east/west
 	if(lat < 0) {
@@ -153,7 +163,8 @@ static char* encode_position_readable(char *str, size_t max_len, char table, cha
 	// calculate the DAO string if requested
 	if(m_config_flags & APRS_FLAG_ADD_DAO) {
 		dao[0] = dao[4] = '!'; // start and end markers
-		dao[1] = 'w';          // WGS84 identifier
+		//dao[1] = 'w';          // WGS84 identifier
+		dao[1] = 'W';          // WGS84 identifier
 		dao[5] = '\0';         // String terminator
 
 		// extract extended precision part
@@ -161,8 +172,10 @@ static char* encode_position_readable(char *str, size_t max_len, char table, cha
 		int lon_min_fract_extended = lon_min_full_precision % 100;
 
 		// encode extended precision part as Base-91
-		dao[2] = '!' + lat_min_fract_extended * 91 / 100; // note: integer division!
-		dao[3] = '!' + lon_min_fract_extended * 91 / 100; // note: integer division!
+		//dao[2] = '!' + lat_min_fract_extended * 91 / 100; // note: integer division!
+		//dao[3] = '!' + lon_min_fract_extended * 91 / 100; // note: integer division!
+		dao[2] = '0' + lat_min_fract_extended/10; // note: integer division!
+		dao[3] = '0' + lon_min_fract_extended/10; // note: integer division!
 	} else {
 		dao[0] = '\0';
 	}
@@ -170,14 +183,18 @@ static char* encode_position_readable(char *str, size_t max_len, char table, cha
 	int ret = snprintf(str, max_len, "%02i%02i.%02i%c%c%03i%02i.%02i%c%c%s",
 			lat_deg, lat_min, lat_min_fract, lat_ns, table,
 			lon_deg, lon_min, lon_min_fract, lon_ew, symbol,
-			dao);
+			//dao);
+			"");
 
 	if(ret < 0) {
+		*str = 0;
 		return NULL; // error
 	} else if(ret < max_len) {
 		return str + ret; // everything encoded ok
 	} else {
-		return str + max_len - 1; // string was truncated
+		// string was truncated. Really bad for positions, because it leads to bad packets
+		*str = 0;
+		return NULL; // error
 	}
 }
 
@@ -245,30 +262,34 @@ static char* encode_position_compressed(char *str, size_t max_len, char table, c
 	return str + 13;
 }
 
-static char* encode_altitude_readable(char *str, size_t max_len)
+static char* encode_altitude_readable(bool first_entry, char *str, size_t max_len)
 {
 	float alt_ft = m_alt_m / 0.3048f;
 
-	int ret = snprintf(str, max_len, "/A=%06i", (int)alt_ft);
+	int ret = snprintf(str, max_len, "%s/A=%06i", (first_entry ? "" : " "), (int)alt_ft);
 
 	if(ret < 0) {
+		*str = 0;
 		return NULL; // error
 	} else if(ret < max_len) {
 		return str + ret; // everything encoded ok
 	} else {
-		return str + max_len - 1; // string was truncated
+		// string was truncated. cut altitude leads to misinterprations
+		*str = 0;
+		return NULL; // error
 	}
 }
 
-static char* encode_frame_id(char *str, size_t max_len, uint32_t frame_id)
+static char* encode_frame_id(bool first_entry, char *str, size_t max_len, uint32_t frame_id)
 {
 	if(!(m_config_flags & APRS_FLAG_ADD_FRAME_COUNTER)) {
 		return str;
 	}
 
-	int ret = snprintf(str, max_len, " #%lu", frame_id);
+	int ret = snprintf(str, max_len, "%s#%lu", (first_entry ? "" : " "), frame_id);
 
 	if(ret < 0) {
+		*str = 0;
 		return NULL; // error
 	} else if(ret < max_len) {
 		return str + ret; // everything encoded ok
@@ -277,7 +298,7 @@ static char* encode_frame_id(char *str, size_t max_len, uint32_t frame_id)
 	}
 }
 
-static char* encode_vbat(char *str, size_t max_len, uint16_t vbat_millivolt)
+static char* encode_vbat(bool first_entry, char *str, size_t max_len, uint16_t vbat_millivolt)
 {
 	if(!(m_config_flags & APRS_FLAG_ADD_VBAT)) {
 		return str;
@@ -286,9 +307,10 @@ static char* encode_vbat(char *str, size_t max_len, uint16_t vbat_millivolt)
 	uint16_t vbat_int = vbat_millivolt / 1000;
 	uint16_t vbat_fract = (vbat_millivolt / 10) % 100;
 
-	int ret = snprintf(str, max_len, " %d.%02dV", vbat_int, vbat_fract);
+	int ret = snprintf(str, max_len, "%s%d.%02dV", (first_entry ? "" : " "), vbat_int, vbat_fract);
 
 	if(ret < 0) {
+		*str = 0;
 		return NULL; // error
 	} else if(ret < max_len) {
 		return str + ret; // everything encoded ok
@@ -297,7 +319,7 @@ static char* encode_vbat(char *str, size_t max_len, uint16_t vbat_millivolt)
 	}
 }
 
-static char* encode_weather(char *str, size_t max_len, const aprs_args_t *args)
+static char *encode_weather(char *str, size_t max_len, const aprs_args_t *args)
 {
 	if(!(m_config_flags & APRS_FLAG_ADD_WEATHER)) {
 		return str;
@@ -312,26 +334,57 @@ static char* encode_weather(char *str, size_t max_len, const aprs_args_t *args)
 	int32_t humidity = (int32_t)(args->humidity_rH + 0.5f) % 100; // h00 = 100%
 	int32_t pressure_dPa = (int32_t)(args->pressure_hPa * 10.0f + 0.5f); // resolution = 0.1 hPa = 10 Pa
 
-	int ret = snprintf(str, max_len, "t%03ldh%02ldb%05ld", temp_fahrenheit, humidity, pressure_dPa);
+	int ret = snprintf(str, max_len, "c...s...g...t%03ldh%02ldb%05ld", temp_fahrenheit, humidity, pressure_dPa);
 
 	if(ret < 0) {
+		*str = 0;
 		return NULL; // error
 	} else if(ret < max_len) {
 		return str + ret; // everything encoded ok
 	} else {
-		return str + max_len - 1; // string was truncated
+		// string was truncated. Bad weather may be not parseable and leads to packet errors or misinterpretations
+		*str = 0;
+		return NULL; // error
 	}
 }
 
-static void update_info_field(const aprs_args_t *args)
+static char *encode_dao(bool first_entry, char *str, size_t max_len, char *dao)
 {
+        if (!*dao || max_len < 6)
+          return NULL;
+
+        int ret = snprintf(str, max_len, "%s%s", (first_entry ? "" : " "), dao);
+
+	if(ret < 0) {
+		*str = 0;
+		return NULL; // error
+	} else if(ret < max_len) {
+		return str + ret; // everything encoded ok
+	} else {
+		// string was truncated. truncated DAO is useless
+		*str = 0;
+		return NULL; // error
+	}
+}
+
+static int update_info_field(const aprs_args_t *args)
+{
+        static uint8_t comments_added = 0;
+        static uint64_t time_comment_added = 0L;
+        uint64_t now = time_base_get();
+	bool first_entry = true;
+
 	char *info_end = (char*)m_info + sizeof(m_info);
 	char *infoptr = (char*)m_info;
 	char *retptr;
 
-	bool is_weather_report = (m_config_flags & APRS_FLAG_ADD_WEATHER) && args->transmit_env_data;
+	//bool is_weather_report = (m_config_flags & APRS_FLAG_ADD_WEATHER) && args->transmit_env_data;
+	bool is_weather_report = false;
 
 	char table = m_table, symbol = m_icon;
+
+	char dao[6];
+        *dao = 0;
 
 	if(is_weather_report) {
 		table = '/';
@@ -347,52 +400,90 @@ static void update_info_field(const aprs_args_t *args)
 	if(m_config_flags & APRS_FLAG_COMPRESS_LOCATION) {
 		retptr = encode_position_compressed(infoptr, info_end - infoptr, table, symbol);
 	} else {
-		retptr = encode_position_readable(infoptr, info_end - infoptr, table, symbol);
+		retptr = encode_position_readable(infoptr, info_end - infoptr, table, symbol, dao);
 	}
 
-	if(retptr) {
-		infoptr = retptr;
+	if (!retptr) {
+		return -1;
 	}
+	infoptr = retptr;
 
 	/* add weather report */
 	if(is_weather_report) {
 		retptr = encode_weather(infoptr, info_end - infoptr, args);
 		if(retptr) {
 			infoptr = retptr;
+			first_entry = false;
 		}
 	}
-
-	/* add comment */
-	size_t chars_to_copy_from_comment = strlen(m_comment);
-	if((chars_to_copy_from_comment + 1) > (info_end - infoptr)) {
-		chars_to_copy_from_comment = info_end - infoptr - 1;
-	}
-
-	strncpy(infoptr, m_comment, chars_to_copy_from_comment);
-
-	infoptr += chars_to_copy_from_comment;
-	*infoptr = '\0';
 
 	/* add altitude for uncompressed packets (already included in compressed format) */
 	if(!(m_config_flags & APRS_FLAG_COMPRESS_LOCATION)
 			&& (m_config_flags & APRS_FLAG_ADD_ALTITUDE)) {
-		retptr = encode_altitude_readable(infoptr, info_end - infoptr);
+		retptr = encode_altitude_readable(first_entry, infoptr, info_end - infoptr);
 		if(retptr) {
 			infoptr = retptr;
+			first_entry = false;
 		}
 	}
 
+	/* add comment */
+        if (!rate_limit_message_text) {
+          comments_added = 0;
+        } else {
+          uint64_t t_offset = MAX_TX_INTERVAL_MS;
+          // send comment text not under 10min, and at least every hour
+          if (t_offset < 600000L)
+            t_offset = 600000L;
+          else if (t_offset > 3600000L)
+            t_offset = 3600000L;
+          if ((time_comment_added + t_offset) < now)
+            comments_added = 0;
+        }
+        if ((comments_added++ % 10) == 0) {
+          time_comment_added = now;
+	  size_t chars_to_copy_from_comment = strlen(m_comment);
+          if (!first_entry && infoptr < info_end-1)
+		*infoptr++ = ' ';
+	  if((chars_to_copy_from_comment + 1) > (info_end - infoptr)) {
+		chars_to_copy_from_comment = info_end - infoptr - 1;
+	  }
+
+	  strncpy(infoptr, m_comment, chars_to_copy_from_comment);
+
+	  infoptr += chars_to_copy_from_comment;
+	  *infoptr = '\0';
+	  first_entry = false;
+        }
+
 	/* add frame counter */
-	retptr = encode_frame_id(infoptr, info_end - infoptr, args->frame_id);
-	if(retptr) {
-		infoptr = retptr;
+        if (m_config_flags & APRS_FLAG_ADD_FRAME_COUNTER) {
+		retptr = encode_frame_id(first_entry, infoptr, info_end - infoptr, args->frame_id);
+		if(retptr) {
+			infoptr = retptr;
+	  		first_entry = false;
+		}
 	}
 
 	/* add Vbat */
-	retptr = encode_vbat(infoptr, info_end - infoptr, args->vbat_millivolt);
-	if(retptr) {
-		infoptr = retptr;
+        if (m_config_flags & APRS_FLAG_ADD_VBAT) {
+		retptr = encode_vbat(first_entry, infoptr, info_end - infoptr, args->vbat_millivolt);
+		if(retptr) {
+			infoptr = retptr;
+	  		first_entry = false;
+		}
 	}
+
+        /* add DAO for uncompressed packets (already at high precision in compressed format) */
+	if (!(m_config_flags & APRS_FLAG_COMPRESS_LOCATION) && *dao) {
+        	retptr = encode_dao(first_entry, infoptr, info_end - infoptr, dao);
+		if(retptr) {
+			infoptr = retptr;
+	  		first_entry = false;
+		}
+	}
+
+	return 0;
 }
 
 // PUBLIC FUNCTIONS
@@ -435,9 +526,11 @@ void aprs_set_source(const char *call)
 	strncpy(m_src, call, sizeof(m_src));
 }
 
-void aprs_get_source(char *source, size_t source_len)
+const char *aprs_get_source(char *source, size_t source_len)
 {
-	strncpy(source, m_src, source_len);
+        if (source != NULL && source_len > 0)
+		strncpy(source, m_src, source_len);
+       return m_src;
 }
 
 void aprs_clear_path()
@@ -494,11 +587,17 @@ bool aprs_can_build_frame(void)
 	return (m_src[0] != '\0') && (m_dest[0] != '\0');
 }
 
-size_t aprs_build_frame(uint8_t *frame, const aprs_args_t *args)
+size_t aprs_build_frame(uint8_t *frame, const aprs_args_t *args, uint8_t packet_type)
 {
 	uint8_t *frameptr = frame;
 	uint8_t *infoptr = m_info;
 	//uint16_t fcs;
+
+	if (packet_type == PACKET_TYPE_WX) {
+          if (!((m_config_flags & APRS_FLAG_ADD_WEATHER) && args->transmit_env_data)) {
+            return 0;
+          }
+        }
 
 	*(frameptr++) = '<';
 	*(frameptr++) = 0xFF;
@@ -506,15 +605,51 @@ size_t aprs_build_frame(uint8_t *frame, const aprs_args_t *args)
 
 	append_address(&frameptr, m_src, 1);
 	*(frameptr++) = '>';
-	append_address(&frameptr, m_dest, (m_npath == 0) ? 1 : 0);
+	//append_address(&frameptr, m_dest, (m_npath == 0) ? 1 : 0);
+	append_address(&frameptr, m_dest, 1);
 
-	for(uint8_t i = 0; i < m_npath; i++) {
-		append_address(&frameptr, m_path[i], (m_npath == (i+1)) ? 1 : 0);
-	}
+        // Add via path. SSID "1" or "2" means dest "call digipeating"
+        if (packet_type != PACKET_TYPE_WX) {
+          if (m_npath == 1 && isdigit(m_path[0][0])) {
+            int ssid = atoi(m_path[0]);
+            if (ssid < 1 || ssid > 2)
+              ssid = 1;
+	    *(frameptr++) = '-';
+	    *(frameptr++) = '0' + ssid;
+          } else {
+	    //for(uint8_t i = 0; i < m_npath; i++) {
+		  //append_address(&frameptr, m_path[i], (m_npath == (i+1)) ? 1 : 0);
+	    //}
+	    for(uint8_t i = 0; i < m_npath && m_path[i]; i++) {
+	      *(frameptr++) = ',';
+	      append_address(&frameptr, m_path[i], 1);
+            }
+          }
+	  *(frameptr++) = ':';
 
-	*(frameptr++) = ':';
+	  if (update_info_field(args) < 0)
+	    return 0;
 
-	update_info_field(args);
+        } else {
+          // wx is only adressed to direct (don't mess up lora qrg)
+	  char *s_info_end = (char *) m_info + sizeof(m_info);
+	  char *s_infoptr = (char *) m_info;
+          struct tm utc;
+          size_t len;
+	  *(frameptr++) = ':';
+          // positionless weather report: starts with '_', followed by 8 bytes (mmddHHMM), followed by weather data
+          wall_clock_get_utc(&utc);
+          // add i.e. '_12312359'
+          if ((len = strftime(s_infoptr, sizeof(m_info), "_%m%d%H%M", &utc)) == 0)
+            return 0;
+          s_infoptr += len;
+	  // append weather data. c...s...g...t... are required, r, p, P, h, L, l, s, # are optional.
+          if (!encode_weather(s_infoptr, s_info_end - s_infoptr, args))
+            return 0;
+          // optinal: aprs-software and wx-unit. We don't add this
+          // We have assuered (by not using update_info_field() for weather reports) that this report
+          // is not messed up with i.e. DAO !W..!, Vbatt, ..;
+        }
 
 	while(*infoptr != '\0') {
 		*frameptr = *infoptr;
@@ -859,6 +994,71 @@ static bool aprs_parse_text_frame(const uint8_t *frame, size_t len, aprs_frame_t
 			ret = parse_location_and_symbol(textframe, result);
 			break;
 
+		case ';':
+			// APRS object
+			ret = 0;
+			break;
+
+		case ')':
+			// APRS item
+			ret = 0;
+			break;
+
+                case '>':
+                        // APRS status message
+                        ret = 0;
+			break;
+
+		case '<':
+			// APRS station capabilities
+                        ret = 0;
+			break;
+
+                case '_':
+                        // APRS WX report without timestamp
+                        ret = 0;
+			break;
+
+                case ':':
+                        // APRS text message
+                        ret = 0;
+			break;
+
+                case '?':
+                        // APRS query
+                        ret = 0;
+			break;
+
+                case 'T':
+                        // Telemetry frame
+                        ret = 0;
+			break;
+
+                case '}':
+                        // Third party traffic
+                        ret = 0;
+			break;
+
+                case '#':
+                case '$':
+                case '*':
+                        // WX stuff
+                        ret = 0;
+			break;
+
+		case '%':
+		case '\'':
+		case ',':
+		case '`':
+		case '[':
+		case '{':
+		case '&':
+		case '+':
+		case '.':
+			// other stuff
+                        ret = 0;
+			break;
+
 		default:
 			// cannot parse this type
 			snprintf(m_error_message, sizeof(m_error_message), "Unknown message type: '%c'", type);
@@ -870,6 +1070,9 @@ static bool aprs_parse_text_frame(const uint8_t *frame, size_t len, aprs_frame_t
 	}
 
 	textframe += ret; // “remove” the processed text from the buffer
+        if (*textframe == ' ')
+			textframe++;
+
 
 	// check if altitude is in remaining data
 	char *ptr = strstr(textframe, "/A=");
@@ -922,6 +1125,7 @@ uint8_t aprs_rx_history_insert(
 		uint8_t protected_index)
 {
 	aprs_rx_history_entry_t *insert_pos = NULL;
+        bool found_existing_entry_for_call = false;
 
 	// first try: check if the source call sign already exists
 	if(insert_pos == NULL) {
@@ -931,13 +1135,21 @@ uint8_t aprs_rx_history_insert(
 
 			if(strcmp(newsrc, oldsrc) == 0) {
 				insert_pos = &m_rx_history.history[i];
+                                found_existing_entry_for_call = true;
 				break;
 			}
 		}
 	}
 
+        // aprs frame without location. Call not already heard? Discard packet
+        if (!found_existing_entry_for_call &&
+		!((frame->lat > 0.0001f && frame->lon > 0.0001f) ||
+		  (frame->lat < -0.0001f && frame->lon < -0.0001f)))
+		return m_rx_history.num_entries;
+
 	// second try: append at the end
-	if(m_rx_history.num_entries < APRS_RX_HISTORY_SIZE) {
+	//if(m_rx_history.num_entries < APRS_RX_HISTORY_SIZE) {
+	if(insert_pos == NULL && m_rx_history.num_entries < APRS_RX_HISTORY_SIZE) {
 		insert_pos = &m_rx_history.history[m_rx_history.num_entries];
 		m_rx_history.num_entries++;
 	}
@@ -962,7 +1174,31 @@ uint8_t aprs_rx_history_insert(
 
 	assert(insert_pos != NULL);
 
-	insert_pos->decoded = *frame;
+	// on positionless frames, don't overwrite existent position with 0.0N 0.0E
+	if (found_existing_entry_for_call &&
+		!((frame->lat > 0.0001f && frame->lon > 0.0001f) ||
+		  (frame->lat < -0.0001f && frame->lon < -0.0001f))) {
+                // remember existing position
+		float lat = insert_pos->decoded.lat;
+		float lon = insert_pos->decoded.lon;
+                // if alt, table, symbol of the new "frame" is 0, rememver current history entry
+		// of this user for re-assigning it later (after "insert_pos->decoded = *frame")
+                float alt = (frame->alt ? frame->alt : insert_pos->decoded.alt);
+                char  table = (frame->table ? frame->table : insert_pos->decoded.table);
+                char  symbol = (frame->symbol ? frame->symbol : insert_pos->decoded.symbol);
+
+		// copy type aprs_frame_t struct frame to aprs_history_entry_t[thisPosition].decoded
+		insert_pos->decoded = *frame;
+
+		// re-assign stored values
+		insert_pos->decoded.lat = lat;
+		insert_pos->decoded.lon = lon;
+		insert_pos->decoded.alt = alt;
+		insert_pos->decoded.table = table;
+		insert_pos->decoded.symbol = symbol;
+	} else {
+		insert_pos->decoded = *frame;
+	}
 	insert_pos->rx_timestamp = rx_timestamp;
 	insert_pos->raw = *raw;
 

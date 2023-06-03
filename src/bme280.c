@@ -402,17 +402,25 @@ void bme280_powersave(void)
 
 float bme280_get_temperature(void)
 {
-	return m_temperature;
+	//return m_temperature;
+	return m_temperature - 6.0f;
 }
 
 
 float bme280_get_humidity(void)
 {
-	return m_humidity;
+	//return m_humidity;
+	float h = m_humidity + 20.0f;
+	if (h > 100.0f) return 100.0f;
+	else if (h < 0.0f) return 0.0f;
+	return h;
 }
 
 
 float bme280_get_pressure(void)
 {
-	return m_pressure;
+	//return m_pressure;
+	float p = m_pressure -1.0f;
+	if (p < 0) return 0.0f;
+	return p;
 }
