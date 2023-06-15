@@ -175,8 +175,7 @@ uint64_t m_last_undecodable_timestamp;
 bool m_lora_rx_busy = false;
 bool m_lora_tx_busy = false;
 
-//bool m_lora_rx_active = false;
-bool m_lora_rx_active = true;
+bool m_lora_rx_active = false;
 bool m_tracker_active = false;
 bool m_gnss_keep_active = false;
 
